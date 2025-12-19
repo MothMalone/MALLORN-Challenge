@@ -1,0 +1,4 @@
+data/
+models/
+catboost_info/
+.venv/
