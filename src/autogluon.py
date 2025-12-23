@@ -19,7 +19,7 @@ warnings.filterwarnings('ignore')
 REAL_BASE_DIR = Path('/drive1/nammt/MALLORN/MALLORN-Challenge')
 DATA_DIR = REAL_BASE_DIR / 'data/processed'
 MODEL_DIR = REAL_BASE_DIR / 'models/autogluon'
-OUTPUT_DIR = REAL_BASE_DIR / 'outputs'
+OUTPUT_DIR = REAL_BASE_DIR / 'outputs_cracked'
 
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -150,7 +150,7 @@ from sklearn.model_selection import GroupKFold
 # Configuration - MULTICLASS
 LABEL = 'SpecType'
 EVAL_METRIC = 'f1_macro'
-TIME_LIMIT = 7200
+TIME_LIMIT = 14400
 PRESET = 'best_quality'
 
 print(f"Configuration:")
@@ -219,31 +219,15 @@ predictor.fit(
     presets=PRESET,
     time_limit=TIME_LIMIT,
     
-    # Stronger regularization (smaller validation set requires it)
-    hyperparameters={
-        'GBM': [
-            {'num_leaves': 20, 'max_depth': 5, 'min_data_in_leaf': 50},
-            {'extra_trees': True, 'num_leaves': 31, 'max_depth': 6, 'ag_args': {'name_suffix': 'XT'}}
-        ],
-        'XGB': {'max_depth': 4, 'min_child_weight': 10},
-        'CAT': {'depth': 5, 'l2_leaf_reg': 10},
-        'RF': [
-            {'max_depth': 10, 'min_samples_leaf': 20},
-            {'criterion': 'gini', 'max_depth': 12, 'ag_args': {'name_suffix': 'Gini'}}
-        ],
-        'XT': {'max_depth': 10, 'min_samples_leaf': 20},
-        'FASTAI': {},
-    },
-    
     # System resources
     num_cpus=8,
-    num_gpus=0,
+    num_gpus=1,
     
     # Ensemble settings
     auto_stack=True,
     num_bag_folds=5,
-    num_bag_sets=1,
-    num_stack_levels=1,
+    num_bag_sets=3,
+    num_stack_levels=3,
     use_bag_holdout=True,  # Use tuning_data for validation
     
     # Keep best models
