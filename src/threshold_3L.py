@@ -1,191 +1,209 @@
 """
-Quick Submission Generator - Computes Fresh Threshold
+Step 2: Fast Threshold Testing - TDE Count Focused
+Loads pre-computed probabilities and tests different TDE counts
 """
 
-from scipy.stats import rankdata
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from autogluon.tabular import TabularPredictor
-from sklearn.metrics import precision_recall_curve, f1_score
-import sys
+from scipy.stats import rankdata
+from sklearn.metrics import (f1_score, precision_score, recall_score, 
+                            confusion_matrix)
 
 # Configuration
-MODEL_DIR = Path('/drive1/nammt/MALLORN/MALLORN-Challenge/models/autogluon')
-DATA_DIR = Path('/drive1/nammt/MALLORN/MALLORN-Challenge/data/processed')
-OUTPUT_DIR = Path('/drive1/nammt/MALLORN/MALLORN-Challenge/outputs')
+OUTPUT_DIR = Path('/drive1/nammt/MALLORN/MALLORN-Challenge/outputs_cracked')
 
 print("="*80)
-print("QUICK SUBMISSION GENERATOR (with threshold calculation)")
+print("STEP 2: TDE COUNT ANALYSIS (Magic Number Optimization)")
 print("="*80)
 
-# Load trained model
-print("\nLoading trained model...")
-predictor = TabularPredictor.load(str(MODEL_DIR / 'ag_multiclass_physics'))
-print("✓ Model loaded: WeightedEnsemble_L5")
+# Load pre-computed probabilities
+print("\nLoading pre-computed probabilities...")
+val_probs = pd.read_csv(OUTPUT_DIR / 'validation_probabilities.csv')
+test_probs = pd.read_csv(OUTPUT_DIR / 'test_probabilities.csv')
+
+y_val = val_probs['true_label'].values
+val_prob = val_probs['tde_probability'].values
+test_prob = test_probs['tde_probability'].values
+
+print(f"✓ Validation: {len(val_probs)} samples ({y_val.sum()} TDEs)")
+print(f"✓ Test: {len(test_probs)} samples")
 
 # ============================================================================
-# STEP 1: Compute optimal threshold on validation data
+# TDE COUNT ANALYSIS (Magic Number Search)
 # ============================================================================
 print("\n" + "="*80)
-print("STEP 1: Computing Optimal Threshold from Validation Data")
+print("SEARCHING FOR OPTIMAL TDE COUNT")
 print("="*80)
 
-# We need to recreate the validation split to get the threshold
-# Load training data
-train_processed = pd.read_csv(DATA_DIR / 'train_physics_processed.csv')
+val_size = len(y_val)
+test_size = len(test_prob)
+true_val_tdes = y_val.sum()
 
-# Recreate base_id for grouping
-train_processed['base_id'] = train_processed['object_id'].str.split('_aug_').str[0]
+print(f"\nValidation context:")
+print(f"  Total samples: {val_size}")
+print(f"  True TDEs: {true_val_tdes}")
+print(f"  TDE rate: {true_val_tdes/val_size*100:.2f}%")
 
-# Recreate the same split (first fold of GroupKFold with n_splits=5)
-from sklearn.model_selection import GroupKFold
-
-gkf = GroupKFold(n_splits=5)
-groups = train_processed['base_id'].values
-X_temp = train_processed.drop(columns=['object_id', 'target'])
-
-train_idx, val_idx = next(gkf.split(X_temp, groups=groups))
-
-# Get validation data
-val_data = train_processed.iloc[val_idx].copy()
-y_val_binary = (val_data['target'] == 1).astype(int).values
-
-# Need to add SpecType for prediction
-train_log = pd.read_csv(Path('/drive1/nammt/MALLORN/MALLORN-Challenge/data/raw/train_log.csv'))
-val_data = val_data.merge(
-    train_log[['object_id', 'SpecType']],
-    left_on='base_id',
-    right_on='object_id',
-    how='left',
-    suffixes=('', '_log')
-)
-
-# Get validation predictions
-print("Generating validation predictions...")
-val_probs_all = predictor.predict_proba(val_data.drop(columns=['object_id', 'target', 'base_id', 'object_id_log']))
-y_val_prob_tde = val_probs_all['TDE'].values
-
-# Find optimal threshold
-precisions, recalls, thresholds = precision_recall_curve(y_val_binary, y_val_prob_tde)
-f1_scores = 2 * (precisions * recalls) / (precisions + recalls + 1e-10)
-best_idx = np.argmax(f1_scores)
-optimal_threshold = thresholds[best_idx] if best_idx < len(thresholds) else 0.5
-
-print(f"\n✓ Optimal threshold: {optimal_threshold:.4f}")
-print(f"  Expected F1: {f1_scores[best_idx]:.4f}")
-
-# Show threshold sensitivity
-print("\nThreshold sensitivity analysis:")
-for thresh in [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.5]:
-    preds = (y_val_prob_tde >= thresh).astype(int)
-    f1 = f1_score(y_val_binary, preds)
-    n_pred = preds.sum()
-    print(f"  {thresh:.2f}: F1={f1:.4f}, predicts {n_pred} TDEs")
-
-# ============================================================================
-# STEP 2: Generate test predictions
-# ============================================================================
-print("\n" + "="*80)
-print("STEP 2: Generating Test Predictions")
-print("="*80)
-
-# Load test data
-test_ag = pd.read_csv(DATA_DIR / 'test_physics_processed.csv')
-test_ids = test_ag['object_id'].values
-
-print("Generating predictions...")
-test_probs_all = predictor.predict_proba(test_ag.drop(columns=['object_id']))
-test_probs = test_probs_all['TDE'].values
-
-print(f"\nTDE probability distribution:")
-print(f"  Mean: {test_probs.mean():.4f}")
-print(f"  Median: {np.median(test_probs):.4f}")
-print(f"  Min: {test_probs.min():.4f}")
-print(f"  Max: {test_probs.max():.4f}")
-
-# ============================================================================
-# STRATEGY 1: Validation-Optimized Threshold
-# ============================================================================
-print("\n" + "="*80)
-print("STRATEGY 1: Validation F1-Optimized Threshold")
-print("="*80)
-
-test_preds_threshold = (test_probs >= optimal_threshold).astype(int)
-
-print(f"\nThreshold: {optimal_threshold:.4f}")
-print(f"  Predicted TDEs: {test_preds_threshold.sum()}")
-print(f"  TDE rate: {test_preds_threshold.mean() * 100:.2f}%")
-
-submission_threshold = pd.DataFrame({
-    'object_id': test_ids,
-    'prediction': test_preds_threshold
-})
-
-path_threshold = OUTPUT_DIR / f'submission_threshold_{optimal_threshold:.4f}.csv'
-submission_threshold.to_csv(path_threshold, index=False)
-print(f"\n✓ Saved: {path_threshold}")
-
-# ============================================================================
-# STRATEGY 2: Magic Number (315)
-# ============================================================================
-print("\n" + "="*80)
-print("STRATEGY 2: Magic Number Ranking")
-print("="*80)
-
-MAGIC_NUMBER = 315
-
-ranks = rankdata(test_probs, method='ordinal')
-cutoff_rank = len(test_probs) - MAGIC_NUMBER + 1
-test_preds_magic = (ranks >= cutoff_rank).astype(int)
-
-magic_threshold = np.sort(test_probs)[-MAGIC_NUMBER]
-
-print(f"\nMagic Number: {MAGIC_NUMBER}")
-print(f"  Predicted TDEs: {test_preds_magic.sum()}")
-print(f"  Effective threshold: {magic_threshold:.4f}")
-
-submission_magic = pd.DataFrame({
-    'object_id': test_ids,
-    'prediction': test_preds_magic
-})
-
-path_magic = OUTPUT_DIR / 'submission_magic315.csv'
-submission_magic.to_csv(path_magic, index=False)
-print(f"\n✓ Saved: {path_magic}")
-
-# ============================================================================
-# COMPARISON
-# ============================================================================
-print("\n" + "="*80)
-print("COMPARISON & RECOMMENDATION")
-print("="*80)
-
-overlap = (test_preds_threshold & test_preds_magic).sum()
-
-print(f"\nStrategy 1: {test_preds_threshold.sum()} TDEs")
-print(f"Strategy 2: {test_preds_magic.sum()} TDEs")
-print(f"Agreement: {overlap} TDEs ({overlap/MAGIC_NUMBER*100:.1f}%)")
-
-if test_preds_threshold.sum() > 500:
-    print(f"\n⚠️  Strategy 1 predicts {test_preds_threshold.sum()} TDEs (seems very high)")
-    print("   → RECOMMEND: Submit Strategy 2 (Magic 315) FIRST")
-elif test_preds_threshold.sum() < 250:
-    print(f"\n✓ Strategy 1 predicts {test_preds_threshold.sum()} TDEs (conservative)")
-    print("   → RECOMMEND: Submit Strategy 1 FIRST")
-else:
-    print(f"\n✓ Both strategies predict reasonable numbers")
-    print("   → RECOMMEND: Submit Strategy 2 (Magic 315) FIRST")
-
-# Save probabilities
-probs_df = pd.DataFrame({
-    'object_id': test_ids,
-    'tde_probability': test_probs,
-    'pred_threshold': test_preds_threshold,
-    'pred_magic': test_preds_magic
-})
-probs_df.to_csv(OUTPUT_DIR / 'probabilities_comparison.csv', index=False)
+print(f"\nTest context:")
+print(f"  Total samples: {test_size}")
+print(f"  Scale factor: {test_size/val_size:.2f}x larger than validation")
 
 print("\n" + "="*80)
-print("READY FOR SUBMISSION!")
+print("VALIDATION PERFORMANCE AT DIFFERENT TDE COUNTS")
 print("="*80)
+
+print("\nTest    Val      Val     Val                    Effective")
+print("TDEs    TDEs     F1      Prec    Recall  TP  FP  Threshold")
+print("-" * 70)
+
+results = []
+
+# Test range from 250 to 400 TDEs
+for test_tde_count in range(250, 401, 5):
+    # Scale to validation size
+    val_tde_count = int(test_tde_count * val_size / test_size)
+    
+    if val_tde_count < 10 or val_tde_count > val_size:
+        continue
+    
+    # Rank-based prediction on validation
+    val_ranks = rankdata(val_prob, method='ordinal')
+    val_cutoff = val_size - val_tde_count + 1
+    val_preds = (val_ranks >= val_cutoff).astype(int)
+    
+    # Metrics
+    f1 = f1_score(y_val, val_preds)
+    precision = precision_score(y_val, val_preds, zero_division=0)
+    recall = recall_score(y_val, val_preds)
+    
+    # Confusion matrix
+    tn, fp, fn, tp = confusion_matrix(y_val, val_preds).ravel()
+    
+    # Effective threshold on test set
+    test_threshold = np.sort(test_prob)[-test_tde_count]
+    
+    print(f"{test_tde_count:4d}    {val_tde_count:3d}    {f1:.4f}   {precision:.3f}   {recall:.3f}   {tp:3d} {fp:3d}   {test_threshold:.4f}")
+    
+    results.append({
+        'test_tde_count': test_tde_count,
+        'val_tde_count': val_tde_count,
+        'val_f1': f1,
+        'val_precision': precision,
+        'val_recall': recall,
+        'true_positives': tp,
+        'false_positives': fp,
+        'false_negatives': fn,
+        'test_threshold': test_threshold
+    })
+
+# ============================================================================
+# ANALYSIS & RECOMMENDATIONS
+# ============================================================================
+print("\n" + "="*80)
+print("ANALYSIS & RECOMMENDATIONS")
+print("="*80)
+
+results_df = pd.DataFrame(results)
+
+# Find best F1
+best_f1_idx = results_df['val_f1'].idxmax()
+best_f1_row = results_df.iloc[best_f1_idx]
+
+print(f"\n1. BEST VALIDATION F1:")
+print(f"   Target TDE count: {best_f1_row['test_tde_count']:.0f}")
+print(f"   Validation F1: {best_f1_row['val_f1']:.4f}")
+print(f"   Precision: {best_f1_row['val_precision']:.3f}")
+print(f"   Recall: {best_f1_row['val_recall']:.3f}")
+print(f"   Effective threshold: {best_f1_row['test_threshold']:.4f}")
+
+# Find top 5 by F1
+print("\n2. TOP 5 TDE COUNTS BY F1:")
+print("\n   Rank  TDEs   Val-F1   Precision  Recall  Threshold")
+print("   " + "-" * 55)
+top5 = results_df.nlargest(5, 'val_f1')
+for rank, (_, row) in enumerate(top5.iterrows(), 1):
+    print(f"   {rank:2d}.   {row['test_tde_count']:4.0f}   {row['val_f1']:.4f}    {row['val_precision']:.3f}     {row['val_recall']:.3f}   {row['test_threshold']:.4f}")
+
+# Precision-Recall tradeoff zones
+print("\n3. STRATEGY ZONES:")
+
+high_precision = results_df[results_df['val_precision'] >= 0.85]
+if len(high_precision) > 0:
+    best_high_prec = high_precision.loc[high_precision['val_f1'].idxmax()]
+    print(f"\n   HIGH PRECISION (≥85%):")
+    print(f"   → {best_high_prec['test_tde_count']:.0f} TDEs")
+    print(f"     F1: {best_high_prec['val_f1']:.4f}, Prec: {best_high_prec['val_precision']:.3f}, Recall: {best_high_prec['val_recall']:.3f}")
+
+high_recall = results_df[results_df['val_recall'] >= 0.85]
+if len(high_recall) > 0:
+    best_high_recall = high_recall.loc[high_recall['val_f1'].idxmax()]
+    print(f"\n   HIGH RECALL (≥85%):")
+    print(f"   → {best_high_recall['test_tde_count']:.0f} TDEs")
+    print(f"     F1: {best_high_recall['val_f1']:.4f}, Prec: {best_high_recall['val_precision']:.3f}, Recall: {best_high_recall['val_recall']:.3f}")
+
+balanced = results_df[(results_df['val_precision'] >= 0.75) & (results_df['val_recall'] >= 0.75)]
+if len(balanced) > 0:
+    best_balanced = balanced.loc[balanced['val_f1'].idxmax()]
+    print(f"\n   BALANCED (Prec≥75%, Recall≥75%):")
+    print(f"   → {best_balanced['test_tde_count']:.0f} TDEs")
+    print(f"     F1: {best_balanced['val_f1']:.4f}, Prec: {best_balanced['val_precision']:.3f}, Recall: {best_balanced['val_recall']:.3f}")
+
+# Compare to your previous result
+print("\n4. YOUR PREVIOUS RESULT:")
+print(f"   Magic 315: Test F1 = 64.57%")
+
+prev_result = results_df[results_df['test_tde_count'] == 315]
+if len(prev_result) > 0:
+    prev = prev_result.iloc[0]
+    print(f"   Validation F1: {prev['val_f1']:.4f}")
+    print(f"   Precision: {prev['val_precision']:.3f}, Recall: {prev['val_recall']:.3f}")
+
+# Suggest improvements
+print("\n5. RECOMMENDED NEXT SUBMISSIONS:")
+
+# Find counts near best F1
+candidates = results_df.nlargest(10, 'val_f1')['test_tde_count'].values
+
+print(f"\n   Based on validation analysis, try these in order:")
+for i, count in enumerate(candidates[:5], 1):
+    row = results_df[results_df['test_tde_count'] == count].iloc[0]
+    print(f"   {i}. Magic {count:.0f} → Val F1: {row['val_f1']:.4f} (Prec: {row['val_precision']:.3f}, Recall: {row['val_recall']:.3f})")
+
+# Save detailed results
+results_path = OUTPUT_DIR / 'tde_count_analysis.csv'
+results_df.to_csv(results_path, index=False)
+print(f"\n✓ Detailed results saved: {results_path}")
+
+# ============================================================================
+# VISUALIZATION DATA
+# ============================================================================
+print("\n" + "="*80)
+print("F1 CURVE")
+print("="*80)
+
+print("\nF1 scores across TDE counts (visual guide):")
+print("\nTDEs:  ", end="")
+for count in range(250, 401, 25):
+    print(f"{count:5d}", end="")
+print("\nF1:    ", end="")
+for count in range(250, 401, 25):
+    row = results_df[results_df['test_tde_count'] == count]
+    if len(row) > 0:
+        f1 = row.iloc[0]['val_f1']
+        print(f"{f1:5.3f}", end="")
+    else:
+        print("  -  ", end="")
+print("\n")
+
+# Show sweet spot range
+best_range = results_df.nlargest(10, 'val_f1')
+min_count = best_range['test_tde_count'].min()
+max_count = best_range['test_tde_count'].max()
+print(f"Sweet spot range: {min_count:.0f} - {max_count:.0f} TDEs")
+print(f"Your 315 is {'INSIDE' if 315 >= min_count and 315 <= max_count else 'OUTSIDE'} this range")
+
+print("\n" + "="*80)
+print("ANALYSIS COMPLETE")
+print("="*80)
+print("\nNext: Use step3_generate_submissions.py with your chosen TDE counts")
